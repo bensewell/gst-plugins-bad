@@ -49,6 +49,7 @@ struct _GstKMSSink
   /*< private > */
   gint fd;
   gboolean own_fd;		/* true if fd is owned by this sink */
+  GstObject *lock_obj; /* to be used to lock on instead of self (when sharing FD this is advised) */
   gint conn_id;
   gint crtc_id;
   gint plane_id;

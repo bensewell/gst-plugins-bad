@@ -88,6 +88,7 @@ enum
 {
   PROP_DRIVER_NAME = 1,
   PROP_DRM_FD,
+  PROP_LOCK_OBJ,
   PROP_BUS_ID,
   PROP_CONNECTOR_ID,
   PROP_PLANE_ID,
@@ -112,7 +113,7 @@ gst_kms_sink_set_render_rectangle (GstVideoOverlay * overlay,
   GST_DEBUG_OBJECT (self, "Setting render rectangle to (%d,%d) %dx%d", x, y,
       width, height);
 
-  GST_OBJECT_LOCK (self);
+  GST_OBJECT_LOCK (self->lock_obj);
 
   if (width == -1 && height == -1) {
     x = 0;
@@ -138,7 +139,7 @@ gst_kms_sink_set_render_rectangle (GstVideoOverlay * overlay,
   }
 
 done:
-  GST_OBJECT_UNLOCK (self);
+  GST_OBJECT_UNLOCK (self->lock_obj);
 }
 
 static void
@@ -149,9 +150,9 @@ gst_kms_sink_expose (GstVideoOverlay * overlay)
   GST_DEBUG_OBJECT (overlay, "Expose called by application");
 
   if (!self->can_scale) {
-    GST_OBJECT_LOCK (self);
+    GST_OBJECT_LOCK (self->lock_obj);
     if (self->reconfigure) {
-      GST_OBJECT_UNLOCK (self);
+      GST_OBJECT_UNLOCK (self->lock_obj);
       GST_DEBUG_OBJECT (overlay, "Sending a reconfigure event");
       gst_pad_push_event (GST_BASE_SINK_PAD (self),
           gst_event_new_reconfigure ());
@@ -159,7 +160,7 @@ gst_kms_sink_expose (GstVideoOverlay * overlay)
       GST_DEBUG_OBJECT (overlay, "Applying new render rectangle");
       /* size of the rectangle does not change, only the (x,y) position changes */
       self->render_rect = self->pending_rect;
-      GST_OBJECT_UNLOCK (self);
+      GST_OBJECT_UNLOCK (self->lock_obj);
     }
   }
 
@@ -801,7 +802,7 @@ retry_find_plane:
   GST_INFO_OBJECT (self, "connector id = %d / crtc id = %d / plane id = %d",
       self->conn_id, self->crtc_id, self->plane_id);
 
-  GST_OBJECT_LOCK (self);
+  GST_OBJECT_LOCK (self->lock_obj);
   self->hdisplay = crtc->mode.hdisplay;
   self->vdisplay = crtc->mode.vdisplay;
 
@@ -813,7 +814,7 @@ retry_find_plane:
   }
 
   self->pending_rect = self->render_rect;
-  GST_OBJECT_UNLOCK (self);
+  GST_OBJECT_UNLOCK (self->lock_obj);
 
   self->buffer_id = crtc->buffer_id;
 
@@ -962,7 +963,7 @@ gst_kms_sink_stop (GstBaseSink * bsink)
     self->own_fd = FALSE;
   }
 
-  GST_OBJECT_LOCK (bsink);
+  GST_OBJECT_LOCK (self->lock_obj);
   self->hdisplay = 0;
   self->vdisplay = 0;
   self->pending_rect.x = 0;
@@ -970,7 +971,7 @@ gst_kms_sink_stop (GstBaseSink * bsink)
   self->pending_rect.w = 0;
   self->pending_rect.h = 0;
   self->render_rect = self->pending_rect;
-  GST_OBJECT_UNLOCK (bsink);
+  GST_OBJECT_UNLOCK (self->lock_obj);
 
   g_object_notify_by_pspec (G_OBJECT (self), g_properties[PROP_DISPLAY_WIDTH]);
   g_object_notify_by_pspec (G_OBJECT (self), g_properties[PROP_DISPLAY_HEIGHT]);
@@ -1000,7 +1001,7 @@ gst_kms_sink_get_caps (GstBaseSink * bsink, GstCaps * filter)
   if (!caps)
     return NULL;
 
-  GST_OBJECT_LOCK (self);
+  GST_OBJECT_LOCK (self->lock_obj);
 
   if (!self->can_scale) {
     out_caps = gst_caps_new_empty ();
@@ -1025,7 +1026,7 @@ gst_kms_sink_get_caps (GstBaseSink * bsink, GstCaps * filter)
     caps = NULL;
   }
 
-  GST_OBJECT_UNLOCK (self);
+  GST_OBJECT_UNLOCK (self->lock_obj);
 
   GST_DEBUG_OBJECT (self, "Proposing caps %" GST_PTR_FORMAT, out_caps);
 
@@ -1163,12 +1164,12 @@ gst_kms_sink_set_caps (GstBaseSink * bsink, GstCaps * caps)
   if (self->modesetting_enabled && !configure_mode_setting (self, &vinfo))
     goto modesetting_failed;
 
-  GST_OBJECT_LOCK (self);
+  GST_OBJECT_LOCK (self->lock_obj);
   if (self->reconfigure) {
     self->reconfigure = FALSE;
     self->render_rect = self->pending_rect;
   }
-  GST_OBJECT_UNLOCK (self);
+  GST_OBJECT_UNLOCK (self->lock_obj);
 
   GST_DEBUG_OBJECT (self, "negotiated caps = %" GST_PTR_FORMAT, caps);
 
@@ -1618,7 +1619,7 @@ gst_kms_sink_show_frame (GstVideoSink * vsink, GstBuffer * buf)
 
   GST_TRACE_OBJECT (self, "displaying fb %d", fb_id);
 
-  GST_OBJECT_LOCK (self);
+  GST_OBJECT_LOCK (self->lock_obj);
   if (self->modesetting_enabled) {
     self->buffer_id = fb_id;
     goto sync_frame;
@@ -1692,7 +1693,7 @@ retry_set_plane:
 sync_frame:
   /* Wait for the previous frame to complete redraw */
   if (!gst_kms_sink_sync (self)) {
-    GST_OBJECT_UNLOCK (self);
+    GST_OBJECT_UNLOCK (self->lock_obj);
     goto bail;
   }
 
@@ -1705,7 +1706,7 @@ sync_frame:
   }
   g_clear_pointer (&self->tmp_kmsmem, gst_memory_unref);
 
-  GST_OBJECT_UNLOCK (self);
+  GST_OBJECT_UNLOCK (self->lock_obj);
   res = GST_FLOW_OK;
 
 bail:
@@ -1720,7 +1721,7 @@ buffer_invalid:
   }
 set_plane_failed:
   {
-    GST_OBJECT_UNLOCK (self);
+    GST_OBJECT_UNLOCK (self->lock_obj);
     GST_DEBUG_OBJECT (self, "result = { %d, %d, %d, %d} / "
         "src = { %d, %d, %d %d } / dst = { %d, %d, %d %d }",
         result.x, result.y, result.w, result.h, src.x, src.y,
@@ -1731,7 +1732,7 @@ set_plane_failed:
   }
 no_disp_ratio:
   {
-    GST_OBJECT_UNLOCK (self);
+    GST_OBJECT_UNLOCK (self->lock_obj);
     GST_ELEMENT_ERROR (self, CORE, NEGOTIATION, (NULL),
         ("Error calculating the output display ratio of the video."));
     goto bail;
@@ -1809,6 +1810,18 @@ gst_kms_sink_set_property (GObject * object, guint prop_id,
       sink->fd = g_value_get_int (value);
       sink->own_fd = FALSE;
       break;
+    case PROP_LOCK_OBJ:
+    {
+      GstObject *oldLock;
+      oldLock = sink->lock_obj;
+      GST_OBJECT_LOCK (oldLock);        // have to lock this one so that we don't change it under our feet!
+      sink->lock_obj = g_value_get_object (value);
+      if (NULL == sink->lock_obj) {
+        sink->lock_obj = (GstObject *) sink;
+      }
+      GST_OBJECT_UNLOCK (oldLock);
+    }
+      break;
     case PROP_BUS_ID:
       g_free (sink->bus_id);
       sink->bus_id = g_value_dup_string (value);
@@ -1872,6 +1885,9 @@ gst_kms_sink_get_property (GObject * object, guint prop_id,
     case PROP_DRM_FD:
       g_value_set_int (value, sink->fd);
       break;
+    case PROP_LOCK_OBJ:
+      g_value_set_object (value, sink->lock_obj);
+      break;
     case PROP_BUS_ID:
       g_value_set_string (value, sink->bus_id);
       break;
@@ -1891,14 +1907,14 @@ gst_kms_sink_get_property (GObject * object, guint prop_id,
       g_value_set_boolean (value, sink->can_scale);
       break;
     case PROP_DISPLAY_WIDTH:
-      GST_OBJECT_LOCK (sink);
+      GST_OBJECT_LOCK (sink->lock_obj);
       g_value_set_int (value, sink->hdisplay);
-      GST_OBJECT_UNLOCK (sink);
+      GST_OBJECT_UNLOCK (sink->lock_obj);
       break;
     case PROP_DISPLAY_HEIGHT:
-      GST_OBJECT_LOCK (sink);
+      GST_OBJECT_LOCK (sink->lock_obj);
       g_value_set_int (value, sink->vdisplay);
-      GST_OBJECT_UNLOCK (sink);
+      GST_OBJECT_UNLOCK (sink->lock_obj);
       break;
     case PROP_CONNECTOR_PROPS:
       gst_value_set_structure (value, sink->connector_props);
@@ -1931,6 +1947,7 @@ gst_kms_sink_finalize (GObject * object)
 static void
 gst_kms_sink_init (GstKMSSink * sink)
 {
+  sink->lock_obj = (GstObject *) sink;  // lock on self by default
   sink->fd = -1;
   sink->conn_id = -1;
   sink->plane_id = -1;
@@ -1999,6 +2016,18 @@ gst_kms_sink_class_init (GstKMSSinkClass * klass)
       "DRM File Descriptor", -1,
       G_MAXINT32, -1,
       G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | G_PARAM_CONSTRUCT);
+
+/**
+   * kmssink:drm-fd:
+   *
+   * If you have a system with multiple displays for the same driver-name,
+   * you can choose which display to use by setting the DRM bus ID. Otherwise,
+   * the driver decides which one.
+   */
+  g_properties[PROP_LOCK_OBJ] = g_param_spec_object ("lock-obj",
+      "Lock Object",
+      "Object To Lock On", G_TYPE_OBJECT,
+      G_PARAM_READWRITE | G_PARAM_CONSTRUCT | G_PARAM_STATIC_STRINGS);
 
   /**
    * kmssink:bus-id:
